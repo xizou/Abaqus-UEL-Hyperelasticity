@@ -16,7 +16,7 @@ This repository contains the Fortran source code for finite strain elasticity (h
 
 If you have `git` installed, you can clone the repository to your local machine using
 ```bash
-git clone https://github.com/bibekananda-datta/Abaqus-UEL-Hyperelasticity.git
+git clone https://github.com/bibekanandadatta/Abaqus-UEL-Hyperelasticity.git
 ```
 
 You can also `fork` the repository and sync as updates are deployed, test and develop your code by creating a separate branch.
@@ -49,7 +49,7 @@ All the source codes are located in the `src` subdirectory and the Abaqus test c
 |   File name   |  Description  |
 | ----------    | ------------  |
 | `uel_nlmech_pk2.for` | is the Fortran source code that implements PK-II stress-based Total Lagrangian user element formulation for hyperelastic materials (Neo-Hookean and Arruda-Boyce). The main `UEL` subroutine was to perform all the initial checks and the calculations are performed in a subsequent subroutine. The source code includes additional subroutines with Lagrangian interpolation functions for 4 types of 2D continuum elements (Tri3, Tri6, Quad4, and Quad8) and 4 types of 3D continuum elements (Tet4, Tet10, Hex8, Hex20) and Gaussian quadratures with reduced and full integration schemes. Body force and traction boundary conditions have not been implemented in this user subroutine, however, these can be applied by overlaying standard Abaqus elements on the user elements (to be discussed in the **Visualization** section). Since Abaqus/ Viewer does not provide native support for visualizing user elements, an additional layer of elements with the same element connectivity has been created and results at the integration points of the elements are stored using the `UVARM` subroutine. |
-| `uel_nlmech_pk1.for` | is Fortran source code for PK-I stress-based total Lagrangian finite element formulation. This implementation only has Neo-Hookean material model. |
+| `uel_nlmech_pk1.for` | is Fortran source code for PK-I stress-based total Lagrangian finite element formulation with Neo-Hookean and Arruda-Boyce material models. |
 | `<some_module>.for` | These are the utility files with different Fortran module that are included in the main source file using `include <filename.ext>` statement at the beginning of the main source code. |
 | `<...>.inp` | are the example input files prepared to be executed with the user element subroutine. Since the user-defined elements share the same topology as one of the Abaqus built-in elements, those models were built in Abaqus/CAE and then exported as input files. Later those input files were modified to include keywords and data to include user element definitions, properties, and overlaying dummy elements. |
 | `addElemNLMech.py` | is a Python code that modifies a simple input file and adds the overlaying dummy elements on the user elements. For complicated input files, this will not work properly and modification of this code will be required (optional). |
@@ -81,7 +81,7 @@ Depending on the material model, the user needs to specify two or three properti
 
 
 > [!NOTE] 
-> Use `matID = 1` for the Neo-Hookean model and `matID = 2` for the Arruda-Boyce model. For the Neo-Hookean model, the locking stretch is $\lambda_L = 0 $, and for the Arruda-Boyce model, it should be a positive real number. For PK-I stress-based implementation, only Neo-Hookean model is available. But it can be easily extended to include Arruda-Boyce model.
+> Use `matID = 1` for the Neo-Hookean model and `matID = 2` for the Arruda-Boyce model. For the Neo-Hookean model, the locking stretch is $\lambda_L = 0 $, and for the Arruda-Boyce model, it should be a positive real number. Both models are available in the PK-I and PK-II implementations.
 
 
 > [!CAUTION] 

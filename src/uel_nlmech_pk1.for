@@ -1,7 +1,7 @@
 ! **********************************************************************
 ! ********* ABAQUS/ STANDARD USER ELEMENT SUBROUTINE (UEL) *************
 ! **********************************************************************
-!!  large strain displacement element with Neo-Hookean material model
+!  large strain displacement element + Neo-Hookean & Arruda-Boyce model
 !   linear quad and hex element formulation use F-bar method to avoid
 !   volumetric locking at near-incompressibility limit (de Souza Neto)
 ! **********************************************************************
@@ -316,6 +316,271 @@
 
       end subroutine mat_NeoHookean
 
+! **********************************************************************
+
+      subroutine mat_ArrudaBoyce(kstep,kinc,time,dtime,nDim,analysis,
+     &            nstress,nNode,jelem,coords,intpt,props,nprops,
+     &            jprops,njprops,F,svars,nsvars,fieldVar,dfieldVar,
+     &            npredf,stressPK1,Amat,dPdFTensor)
+
+! **********************************************************************
+!     This material point subroutine calculates constitutive response
+!     of a Arruda-Boyce type material and returns the PK-I stress and
+!     the material tangent as outputs. Optionally, it can return some
+!     other strain and stress quantities in vector form (needs to be
+!     programmed). All the constitutive calculations are initially done
+!     in 3D and later the corresponding matrices are reshaped based on
+!     the type of analysis is being performed by the user.
+!     This material subroutine also stores the user-defined element
+!     output in a global array for post=processing in Abaqus/Viewer.
+!
+!                       LIST OF MATERIAL PROPERTIES
+!
+!     G           = props(1)        Shear modulus
+!     Kappa       = props(2)        Bulk modulus
+!     lambda_L    = props(3)        Locking stretch for AB model
+! **********************************************************************
+
+      use global_parameters
+      use error_logging
+      use linear_algebra
+      use lagrange_element
+      use solid_mechanics
+      use post_processing
+
+      implicit none
+
+      ! input arguments to the subroutine
+      character(len=2), intent(in)  :: analysis
+
+      integer, intent(in)   :: kstep, kinc, nDim, nstress
+      integer, intent(in)   :: nNode, jelem, intpt, nprops
+      integer, intent(in)   :: njprops, nsvars, npredf
+
+      real(wp), intent(in)  :: time(2), dtime
+      real(wp), intent(in)  :: coords(nDim,nNode)
+      real(wp), intent(in)  :: props(nprops)
+      integer,  intent(in)  :: jprops(njprops)
+
+      real(wp), intent(in)  :: F(3,3)
+      real(wp), intent(in)  :: fieldVar(npredf)
+      real(wp), intent(in)  :: dfieldVar(npredf)
+
+      ! output from the subroutine
+      real(wp), intent(out) :: stressPK1(nDim**2,1)
+      real(wp), intent(out) :: Amat(nDim**2,nDim**2)
+      real(wp), intent(out) :: dPdFTensor(3,3,3,3)
+
+      ! optional output from the subroutine
+      real(wp), intent(inout), optional :: svars(nsvars)
+
+      ! material properties
+      real(wp)              :: Gshear, Kappa, lam_L
+
+      ! local kinematic variables (3x3 if tensors)
+      real(wp)              :: Finv(3,3), FinvT(3,3), detF
+      real(wp)              :: C(3,3), Cinv(3,3), trC
+      real(wp)              :: B(3,3), Binv(3,3)
+      real(wp)              :: lam_c, lam_r, beta_c, dBeta_c
+
+      ! intermediate variables for stress tensors
+      real(wp)              :: stressTensorPK1(3,3)
+      real(wp)              :: stressVectPK1(nUnSymm,1)
+
+      ! output variables (3x3 stress and strain tensors)
+      real(wp)              :: strainTensorLagrange(3,3)
+      real(wp)              :: strainTensorEuler(3,3)
+      real(wp)              :: stressTensorPK2(3,3)
+      real(wp)              :: stressTensorCauchy(3,3)
+
+      ! vector form (6x1 or 9x1) of stress and strain tensors
+      real(wp)              :: strainVectLagrange(nSymm,1)
+      real(wp)              :: strainVectEuler(nSymm,1)
+      real(wp)              :: stressVectPK2(nSymm,1)
+      real(wp)              :: stressVectCauchy(nSymm,1)
+
+      ! final vector form of stress and strain tensors based on analysis
+      real(wp)              :: strainLagrange(nStress,1)
+      real(wp)              :: strainEuler(nStress,1)
+      real(wp)              :: stressPK2(nStress,1)
+      real(wp)              :: stressCauchy(nStress,1)
+
+      integer               :: i, j, k, l     ! loop counters
+
+      dPdFTensor  = zero
+      Amat        = zero
+
+      ! retrieve the properties
+      Gshear  = props(1)
+      Kappa   = props(2)
+      lam_L   = props(3)
+
+      if (lam_L .le. zero) then
+        call msg%ferror(flag=error, src='mat_ArrudaBoyce',
+     &       msg='Incorrect material parameter (lam_L).', ra=lam_L)
+        call xit
+      end if
+
+      ! calculate all the kinematic quantities (3x3 tensors)
+      ! since F is 3x3, it is convenient to do calculation in 3x3
+      ! later the stress tensor can be reshaped based on dimension
+      detF    = det(F)
+
+      if (detF .le. zero) then
+        call msg%ferror(flag=error, src='mat_ArrudaBoyce',
+     &          msg='Issue with volume change (detF)',
+     &          ivec=[jelem, intpt], ra=detF)
+        call xit
+      end if
+
+      Finv    = inv(F)
+      FinvT   = transpose(Finv)
+      C       = matmul(transpose(F),F)
+      Cinv    = inv(C)
+      trC     = trace(C)
+      B       = matmul(F,transpose(F))
+      Binv    = inv(B)
+      lam_c   = sqrt(trC/three)
+      lam_r   = lam_c/lam_L
+      beta_c  = InvLangevin(lam_r)
+      dBeta_c = DInvLangevin(lam_r)
+
+      ! calculate strain tensors (3x3 tensors)
+      strainTensorLagrange  = half*(C-ID3)
+      strainTensorEuler     = half*(ID3-Binv)
+
+
+      ! calculate stress tensors (3x3 tensor)
+      stressTensorPK1     =
+     &      (Gshear*lam_L/(three*lam_c))*beta_c*F
+     &      - ((Gshear*lam_L)/three-Kappa*log(detF))*FinvT
+
+      stressTensorCauchy  = (one/detF)
+     &      * ((Gshear*lam_L/(three*lam_c))*beta_c*B
+     &      - ((Gshear*lam_L)/three-Kappa*log(detF))*ID3)
+
+      stressTensorPK2     = matmul(Finv,stressTensorPK1)
+
+      ! calculate the material tangent tensor, dP/dF (3x3x3x3 tensor)
+      dPdFTensor  = zero
+      do i = 1, 3
+        do j = 1, 3
+          do k = 1, 3
+            do l = 1, 3
+              dPdFTensor(i,j,k,l) = dPdFTensor(i,j,k,l)
+     &          + (Gshear*lam_L/(three*lam_c))*beta_c
+     &          * ID3(i,k)*ID3(j,l)
+     &          + Gshear/(nine*lam_c**two)
+     &          * (dBeta_c-(lam_L/lam_c)*beta_c)*F(i,j)*F(k,l)
+     &          + Kappa*Finv(j,i)*Finv(l,k)
+     &          + ((Gshear*lam_L)/three-Kappa*log(detF))
+     &          * Finv(l,i)*Finv(j,k)
+            end do
+          end do
+        end do
+      end do
+
+      !!!!!!!!!!!!!!!! END OF CONSTITUTIVE CALCULATION !!!!!!!!!!!!!!!!!
+
+      ! reshape the strain and stress tensors into vectors
+      ! dimension: (SYMM 6x1) or (UNSYMM 9x1)
+      call voigtVector(strainTensorLagrange, strainVectLagrange)
+      call voigtVector(strainTensorEuler, strainVectEuler)
+      call unsymmVector(stressTensorPK1,stressVectPK1)
+      call voigtVector(stressTensorPK2, stressVectPK2)
+      call voigtVector(stressTensorCauchy, stressVectCauchy)
+
+
+      ! reshape the stress vector according to dimension and/or analysis
+      if (analysis .eq. '3D') then
+        call unsymmMatrix(dPdFTensor, Amat)
+        call unsymmVectorTruncate(stressVectPK1,stressPK1)
+
+      else if (analysis .eq. 'PE') then
+        call unsymmMatrix(dPdFTensor(1:nDim,1:nDim,1:nDim,1:nDim),
+     &                    Amat)
+        call unsymmVectorTruncate(stressVectPK1,stressPK1)
+
+      else
+        call msg%ferror(flag=error, src='mat_ArrudaBoyce',
+     &            msg='Wrong analysis.', ch=analysis)
+        call xit
+      end if
+
+
+      ! additional variable for post-processing
+      call voigtVectorTruncate(strainVectLagrange,strainLagrange)
+      call voigtVectorTruncate(strainVectEuler,strainEuler)
+      call voigtVectorTruncate(stressVectPK2,stressPK2)
+      call voigtVectorTruncate(stressVectCauchy,stressCauchy)
+
+      ! save the variables to be post-processed in globalPostVars
+      globalPostVars(jelem,intPt,1:nStress) = stressCauchy(1:nStress,1)
+      globalPostVars(jelem,intPt,nStress+1:2*nStress)
+     &                                      = strainEuler(1:nStress,1)
+
+! **********************************************************************
+
+      contains
+
+      function InvLangevin(x)
+
+      ! calculates an approximation of the inverse Langevin function
+      ! reference: Bergstorm (PhD thesis, MIT, 1999)
+
+      implicit none
+
+      real(wp), intent(in)  :: x
+      real(wp)              :: InvLangevin
+
+      if (abs(x) .lt. 0.84136_wp) then
+        InvLangevin = 1.31446_wp*tan(1.58986_wp*x) + 0.91209_wp*x
+
+      else if ((abs(x) .ge. 0.84136_wp) .and.
+     &         (abs(x) .lt. one)) then
+        InvLangevin = one/(sign(one,x)-x)
+
+      else
+        call msg%ferror(flag=error,
+     &       src='mat_ArrudaBoyce:InvLangevin',
+     &       msg='Unbound argument.', ra=x)
+        call xit
+      end if
+
+      end function InvLangevin
+
+! **********************************************************************
+
+      function DInvLangevin(x)
+
+      ! calculates an approximation of derivative of
+      ! the inverse Langevin function
+      ! reference: Bergstorm (PhD thesis, MIT, 1999)
+
+      implicit none
+
+      real(wp), intent(in)   :: x
+      real(wp)               :: DInvLangevin, sec
+
+      if (abs(x) .lt. 0.84136_wp) then
+        DInvLangevin = 2.0898073756_wp*(tan(1.58986_wp*x))**two
+     &                + 3.0018973756_wp
+
+      else if ((abs(x) .ge. 0.84136_wp) .and.
+     &         (abs(x) .lt. one)) then
+        DInvLangevin = one/((sign(one,x)-x)**two)
+
+      else
+        call msg%ferror(flag=error,
+     &       src='mat_ArrudaBoyce:DInvLangevin',
+     &       msg='Unbound argument.', ra=x)
+        call xit
+      end if
+
+      end function DInvLangevin
+
+      end subroutine mat_ArrudaBoyce
+
       end module hyperelastic_material
 
 ! **********************************************************************
@@ -489,6 +754,7 @@
       Kuu       = zero
       Ru        = zero
 
+      fbarFlag  = jprops(2)
       matID     = jprops(3)
 
       !!!!!!!!!!! END VARIABLE DECLARATION AND INITIALIZATION !!!!!!!!!!
@@ -676,8 +942,10 @@
      &            npredf,stressPK1,Amat,dPdFTensor)
 
         else if (matID .eq. 2) then
-          call msg%ferror( flag=error, src='elem_nlmech',
-     &        msg='Arruda-Boyce material is not available.', ia=matID )
+          call mat_ArrudaBoyce(kstep,kinc,time,dtime,nDim,analysis,
+     &            nstress,nNode,jelem,coords,intpt,props,nprops,
+     &            jprops,njprops,Fbar,svars,nsvars,fieldVar,dfieldVar,
+     &            npredf,stressPK1,Amat,dPdFTensor)
         else
           call msg%ferror( flag=error, src='elem_nlmech',
      &                    msg='Wrong material ID.', ia=matID )

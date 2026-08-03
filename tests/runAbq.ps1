@@ -4,7 +4,8 @@ $NPROC      = 1
 $JOBNAME1   = "single_elem_uniaxial_U7_CPE4_NH"
 $INPUTFILE1 = "$JOBNAME1.inp"
 
-$UEL        = "uel_nlmech_pk2.for"
+# $UEL        = "../src/uel_nlmech_pk1.for"
+$UEL        = "../src/uel_nlmech_pk2.for"
 
 clear
 

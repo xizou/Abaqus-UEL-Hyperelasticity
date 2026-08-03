@@ -451,10 +451,11 @@
 
 
       ! calculate stress tensors
-      stressTensorPK2     = (Gshear/three) * lam_r * beta_c * ID3
+      stressTensorPK2     = (Gshear*lam_L/(three*lam_c))*beta_c*ID3
      &      - ( (Gshear*lam_L)/three - Kappa*log(detF) ) * Cinv
 
-      stressTensorCauchy  = (1/detF) * ( (Gshear/three)*lam_r*beta_c*B
+      stressTensorCauchy  = (1/detF) *
+     &      ( (Gshear*lam_L/(three*lam_c))*beta_c*B
      &      - ( (Gshear*lam_L)/three - Kappa*log(detF) ) * ID3 )
 
       stressTensorPK1     = matmul(F,stressTensorPK2)
@@ -467,7 +468,7 @@
             do l = 1,3
               Cmat(i,j,k,l) = Cmat(i,j,k,l)
      &            + Gshear/(nine*lam_c**two)
-     &            * ( dBeta_c- lam_r*beta_c ) * ID3(i,j)*ID3(k,l)
+     &            * (dBeta_c-(lam_L/lam_c)*beta_c)*ID3(i,j)*ID3(k,l)
      &            + Kappa * Cinv(i,j)*Cinv(k,l)
      &            + ( (Gshear*lam_L)/three - Kappa*log(detF) )
      &            * ( Cinv(i,k)*Cinv(j,l) + Cinv(i,l)*Cinv(j,k) )
